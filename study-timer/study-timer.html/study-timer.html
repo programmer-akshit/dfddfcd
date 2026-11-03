@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Study Timer</title>
+<style>
+:root{--bg:#f6f5f1;--card:#fff;--ink:#1f2328;--mute:#6b7280;--line:#e5e3dc;--acc:#2f6f5e;--accInk:#fff;--bad:#b3392f}
+@media (prefers-color-scheme:dark){:root{--bg:#16181a;--card:#1f2224;--ink:#ecebe6;--mute:#9aa0a6;--line:#2e3235;--acc:#5fb59e;--accInk:#0f1a16;--bad:#e0746a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 system-ui,sans-serif}
+main{max-width:640px;margin:0 auto;padding:24px 16px 48px}
+h1{font-size:20px;margin:0 0 16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px}
+.tabs{display:flex;gap:6px;margin-bottom:16px}
+.tabs button{flex:1}
+button,input{font:inherit;color:inherit}
+button{border:1px solid var(--line);background:var(--card);border-radius:10px;padding:10px 14px;cursor:pointer}
+button.on,button.primary{background:var(--acc);color:var(--accInk);border-color:var(--acc)}
+button:disabled{opacity:.4;cursor:default}
+input[type=text],input[type=number]{width:100%;border:1px solid var(--line);background:transparent;border-radius:10px;padding:10px}
+.time{font-variant-numeric:tabular-nums;font-size:clamp(44px,15vw,72px);text-align:center;font-weight:600;margin:12px 0}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.row>*{flex:1}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center}
+.stats b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
+.stats span,.mute{color:var(--mute);font-size:13px}
+.day{display:flex;justify-content:space-between;margin:16px 0 6px;font-weight:600}
+.item{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)}
+.item .l{flex:1;min-width:0}
+.item .l div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item .d{font-variant-numeric:tabular-nums;font-weight:600}
+.x{padding:2px 8px;color:var(--bad);border:none;background:none}
+.hide{display:none}
+</style>
+</head>
+<body>
+<main>
+  <h1>Study Timer</h1>
+
+  <div class="tabs">
+    <button id="tabSw">Stopwatch</button>
+    <button id="tabTm">Timer</button>
+  </div>
+
+  <div class="card">
+    <input type="text" id="subject" placeholder="What are you studying? (optional)" maxlength="60">
+    <div id="timerSet" class="row hide" style="margin-top:10px;align-items:center">
+      <input type="number" id="mins" min="1" max="600" value="25" style="max-width:100px;flex:none"> <span class="mute">minutes</span>
+    </div>
+    <div class="time" id="display">00:00:00</div>
+    <div class="row">
+      <button class="primary" id="startBtn">Start</button>
+      <button id="resetBtn">Reset</button>
+      <button id="saveBtn">Save session</button>
+    </div>
+    <p class="mute" id="hint" style="margin:12px 0 0">Your running time survives page refreshes. Press “Save session” to log it.</p>
+  </div>
+
+  <div class="card stats">
+    <div><b id="sToday">0m</b><span>Today</span></div>
+    <div><b id="sWeek">0m</b><span>Last 7 days</span></div>
+    <div><b id="sAll">0m</b><span>All time</span></div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="align-items:center;margin-bottom:4px">
+      <strong style="flex:2">History</strong>
+      <button id="csvBtn" style="flex:none">Export CSV</button>
+      <button id="clearBtn" style="flex:none">Clear all</button>
+    </div>
+    <div id="history"></div>
+  </div>
+</main>
+
+<script>
+const KEY_HIST = 'studyTimer.history', KEY_STATE = 'studyTimer.state';
+const $ = id => document.getElementById(id);
+const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
+const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+
+let history = load(KEY_HIST, []);
+// state: mode, running, startedAt (ms epoch), accumulated (ms), target (ms, timer only), subject
+let st = Object.assign({mode:'sw', running:false, startedAt:0, accumulated:0, target:25*60000, subject:''}, load(KEY_STATE, {}));
+
+const elapsed = () => st.accumulated + (st.running ? Date.now() - st.startedAt : 0);
+const shown = () => st.mode === 'tm' ? Math.max(0, st.target - elapsed()) : elapsed();
+const pad = n => String(n).padStart(2, '0');
+function fmt(ms){ const s = Math.floor(ms/1000); return `${pad(Math.floor(s/3600))}:${pad(Math.floor(s%3600/60))}:${pad(s%60)}`; }
+function human(ms){ const m = Math.round(ms/60000); return m < 60 ? `${m}m` : `${Math.floor(m/60)}h ${m%60}m`; }
+const dayKey = t => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; };
+const persist = () => store(KEY_STATE, st);
+
+function save(){
+  const ms = elapsed();
+  if (ms < 1000) return;
+  history.unshift({id: Date.now(), end: Date.now(), ms, subject: st.subject.trim() || 'Study'});
+  store(KEY_HIST, history);
+  reset();
+  renderHistory();
+}
+function reset(){
+  st.running = false; st.accumulated = 0; st.startedAt = 0; persist(); render();
+}
+function toggle(){
+  if (st.running){ st.accumulated += Date.now() - st.startedAt; st.running = false; }
+  else { st.startedAt = Date.now(); st.running = true; }
+  persist(); render();
+}
+function setMode(m){
+  if (st.mode === m) return;
+  if (elapsed() > 0 && !confirm('Switching mode resets the current time. Continue?')) return;
+  st.mode = m; reset();
+}
+function finishTimer(){
+  // countdown reached zero: log the full target
+  st.accumulated = st.target; st.running = false; persist();
+  try { const c = new AudioContext(), o = c.createOscillator(); o.connect(c.destination); o.start(); o.stop(c.currentTime + .6); } catch {}
+  save();
+  alert('Time is up! Session saved.');
+}
+
+function render(){
+  $('tabSw').classList.toggle('on', st.mode === 'sw');
+  $('tabTm').classList.toggle('on', st.mode === 'tm');
+  $('timerSet').classList.toggle('hide', st.mode !== 'tm');
+  $('mins').disabled = st.running || st.accumulated > 0;
+  $('mins').value = Math.round(st.target/60000);
+  $('subject').value = st.subject;
+  $('startBtn').textContent = st.running ? 'Pause' : (st.accumulated > 0 ? 'Resume' : 'Start');
+  $('saveBtn').disabled = elapsed() < 1000;
+  $('display').textContent = fmt(shown());
+  document.title = (st.running ? fmt(shown()) + ' · ' : '') + 'Study Timer';
+}
+
+function renderHistory(){
+  const now = Date.now(), today = dayKey(now);
+  const sum = f => history.filter(f).reduce((a,h) => a + h.ms, 0);
+  $('sToday').textContent = human(sum(h => dayKey(h.end) === today));
+  $('sWeek').textContent = human(sum(h => now - h.end < 7*864e5));
+  $('sAll').textContent = human(sum(() => true));
+
+  const box = $('history'); box.textContent = '';
+  if (!history.length){ box.innerHTML = '<p class="mute">No sessions yet. Your saved sessions will show up here.</p>'; return; }
+  const groups = {};
+  history.forEach(h => (groups[dayKey(h.end)] ||= []).push(h));
+  Object.keys(groups).sort().reverse().forEach(k => {
+    const items = groups[k];
+    const label = new Date(items[0].end).toLocaleDateString(undefined, {weekday:'short', month:'short', day:'numeric', year:'numeric'});
+    const head = document.createElement('div'); head.className = 'day';
+    head.innerHTML = '<span></span><span></span>';
+    head.children[0].textContent = label;
+    head.children[1].textContent = human(items.reduce((a,h) => a + h.ms, 0));
+    box.appendChild(head);
+    items.forEach(h => {
+      const el = document.createElement('div'); el.className = 'item';
+      el.innerHTML = '<div class="l"><div></div><span class="mute"></span></div><span class="d"></span><button class="x" title="Delete">✕</button>';
+      el.querySelector('.l div').textContent = h.subject;
+      el.querySelector('.mute').textContent = new Date(h.end).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+      el.querySelector('.d').textContent = fmt(h.ms);
+      el.querySelector('.x').onclick = () => { history = history.filter(x => x.id !== h.id); store(KEY_HIST, history); renderHistory(); };
+      box.appendChild(el);
+    });
+  });
+}
+
+function exportCsv(){
+  const rows = [['Date','End time','Subject','Minutes']].concat(history.map(h =>
+    [dayKey(h.end), new Date(h.end).toLocaleTimeString(), '"' + h.subject.replace(/"/g,'""') + '"', (h.ms/60000).toFixed(1)]));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([rows.map(r => r.join(',')).join('\n')], {type:'text/csv'}));
+  a.download = 'study-history.csv'; a.click();
+}
+
+$('startBtn').onclick = toggle;
+$('resetBtn').onclick = () => { if (elapsed() < 1000 || confirm('Discard current time without saving?')) reset(); };
+$('saveBtn').onclick = save;
+$('tabSw').onclick = () => setMode('sw');
+$('tabTm').onclick = () => setMode('tm');
+$('subject').oninput = e => { st.subject = e.target.value; persist(); };
+$('mins').onchange = e => { st.target = Math.min(600, Math.max(1, +e.target.value || 25)) * 60000; persist(); render(); };
+$('csvBtn').onclick = exportCsv;
+$('clearBtn').onclick = () => { if (history.length && confirm('Delete ALL history? This cannot be undone.')){ history = []; store(KEY_HIST, history); renderHistory(); } };
+
+setInterval(() => {
+  if (!st.running) return;
+  if (st.mode === 'tm' && elapsed() >= st.target) return finishTimer();
+  render();
+}, 250);
+
+render(); renderHistory();
+</script>
+</body>
+</html>
